@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import {chatPushPayload,selectChatPushRecipients} from "../supabase/functions/bixpo-push/push-utils.mjs";
+import {chatImagePathOwnedBy,chatMessageNotificationBody,chatMessageParts,chatPushPayload,isChatImagePath,selectChatPushRecipients} from "../supabase/functions/bixpo-push/push-utils.mjs";
 
 const workerSource=readFileSync(new URL("../sw.js",import.meta.url),"utf8");
 const appSource=readFileSync(new URL("../app.js",import.meta.url),"utf8");
@@ -107,4 +107,39 @@ test("chat sound stays active and local notifications are deduplicated or suppre
   await fallback.context.notifyChat({id:53,staff_name:"지수",message:"로컬 알림"});
   await fallback.context.notifyChat({id:53,staff_name:"지수",message:"로컬 알림"});
   assert.equal(fallback.notifications.length,1);
+  assert.equal(fallback.notifications[0].options.body,"로컬 알림");
+});
+
+
+test("chat image markers stay hidden from message text and push notifications",()=>{
+  const path="chat/"+encodeURIComponent("민수")+"/01234567-89ab-cdef-0123-456789abcdef.jpg";
+  const message="집결 장소가 변경됐습니다."+String.fromCharCode(10)+"[[bixpo-image:"+path+"]]";
+  assert.equal(isChatImagePath(path),true);
+  assert.equal(chatImagePathOwnedBy(path,"민수"),true);
+  assert.equal(chatImagePathOwnedBy(path,"지수"),false);
+  assert.deepEqual(chatMessageParts(message),{text:"집결 장소가 변경됐습니다.",imagePath:path});
+  assert.equal(chatMessageNotificationBody(message),"집결 장소가 변경됐습니다. · 📷 사진");
+  assert.equal(chatMessageNotificationBody("[[bixpo-image:"+path+"]]"),"📷 사진");
+  const payload=chatPushPayload({id:77,staff_name:"민수",message});
+  assert.equal(payload.body,"집결 장소가 변경됐습니다. · 📷 사진");
+  assert.equal(payload.body.includes("[[bixpo-image:"),false);
+});
+
+test("chat image path validation rejects arbitrary object keys",()=>{
+  assert.equal(isChatImagePath("other/file.jpg"),false);
+  assert.equal(isChatImagePath("chat/민수/not-a-uuid.jpg"),false);
+});
+
+test("chat view adds a photo picker and renders signed private photos",()=>{
+  const app=appContext({visibilityState:"visible"});
+  const path="chat/민수/01234567-89ab-cdef-0123-456789abcdef.jpg";
+  const message="현장 위치 사진입니다."+String.fromCharCode(10)+"[[bixpo-image:"+path+"]]";
+  const rows=[{id:78,staff_name:"민수",message,created_at:"2026-10-03T00:00:00Z"}];
+  const setup="staff={name:'민수',role:'staff'};CHAT="+JSON.stringify(rows)+";chatImageUrls.set("+JSON.stringify(path)+",{url:'https://example.supabase.co/storage/v1/object/sign/bixpo-chat/photo?token=x',expiresAt:Date.now()+3600000});chatView()";
+  const html=vm.runInNewContext(setup,app.context);
+  assert.match(html,/aria-label="사진 첨부"/);
+  assert.match(html,/id="chatImageInput"/);
+  assert.match(html,/현장 위치 사진입니다/);
+  assert.match(html,/alt="채팅 첨부 사진"/);
+  assert.equal(html.includes("[[bixpo-image:"),false);
 });

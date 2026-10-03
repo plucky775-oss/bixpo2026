@@ -1,5 +1,5 @@
 
-const SB='https://ovaqwpzffawtozgidbav.supabase.co',KEY='sb_publishable_WJNbTVKF66c6Y7AVfxaYBA_7gpkEUyP';let S={people:[],shifts:[],tasks:[],notes:[]},FAQ=[],tab=new URLSearchParams(location.search).get('tab')==='chat'?'chat':'calendar',admin=false,adminPass='',personFilter='전체',typeFilter='전체',faqProduct='전체',faqQuery='',openFaq=new Set(),staff=null,staffToken=localStorage.getItem('bixpo_staff_token')||'',CHAT=[],chatPushRegistered=false,chatNotified=new Set();const T=[['calendar','📅 통합 달력'],['people','👥 개인별 일정'],['shifts','🪪 근무표'],['tasks','☑ 준비·시연'],['faq','💬 전시 FAQ'],['chat','💬 T/F 채팅'],['adminpanel','⚙️ 관리자']];
+const SB='https://ovaqwpzffawtozgidbav.supabase.co',KEY='sb_publishable_WJNbTVKF66c6Y7AVfxaYBA_7gpkEUyP';let S={people:[],shifts:[],tasks:[],notes:[]},FAQ=[],tab=new URLSearchParams(location.search).get('tab')==='chat'?'chat':'calendar',admin=false,adminPass='',personFilter='전체',typeFilter='전체',faqProduct='전체',faqQuery='',openFaq=new Set(),staff=null,staffToken=localStorage.getItem('bixpo_staff_token')||'',CHAT=[],chatPushRegistered=false,chatNotified=new Set(),chatImageUrls=new Map(),chatImageSigning=false,chatSelectedImage=null,chatSelectedImageUrl='',chatSending=false;const T=[['calendar','📅 통합 달력'],['people','👥 개인별 일정'],['shifts','🪪 근무표'],['tasks','☑ 준비·시연'],['faq','💬 전시 FAQ'],['chat','💬 T/F 채팅'],['adminpanel','⚙️ 관리자']];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function md(s){let m=String(s||'').match(/11\/(\d{1,2})/);return m?+m[1]:null}
 function stayRange(s){let a=[...String(s||'').matchAll(/11\/(\d{1,2})/g)].map(x=>+x[1]);return a.length>1?[a[0],a[1]]:null}
@@ -19,13 +19,92 @@ async function staffApi(body){let r=await fetch(SB+'/functions/v1/bixpo-staff',{
 async function restoreStaff(){if(!staffToken)return;try{let j=await staffApi({action:'me',token:staffToken});staff={name:j.name,role:j.role};applyStaff()}catch(e){localStorage.removeItem('bixpo_staff_token');staffToken=''}}
 function applyStaff(){if(!staff)return;staffBtn.textContent='👤 '+staff.name+(staff.role==='admin'?' · 관리자':'');personFilter=staff.name;if(staff.role==='admin'){admin=true;adminBtn.style.display='none'}if(staffToken)syncStaffPushSubscription();render()}
 async function staffLogin(){if(staff){try{await staffApi({action:'logout',token:staffToken})}catch(_){}staff=null;staffToken='';localStorage.removeItem('bixpo_staff_token');admin=false;adminBtn.style.display='';staffBtn.textContent='👤 직원 로그인';personFilter='전체';render();return}let box=document.createElement('div');box.id='staffLoginModal';box.style.cssText='position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';box.innerHTML='<div style="background:white;border-radius:16px;padding:20px;width:min(420px,100%)"><h3 style="margin-top:0">👤 직원 로그인</h3><label>이름 선택<select id="staffNameSelect" style="width:100%;padding:11px;margin:7px 0 12px;border:1px solid #ddd;border-radius:9px"><option value="">본인 이름을 선택하세요</option>'+S.people.map(p=>'<option value="'+esc(p.name)+'">'+esc(p.name)+(p.name==='최재혁'?' · 관리자':'')+'</option>').join('')+'</select></label><label>PIN 4자리<input id="staffPinInput" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" placeholder="••••" style="width:100%;padding:11px;margin:7px 0 15px;border:1px solid #ddd;border-radius:9px;font-size:20px;letter-spacing:6px"></label><div class="row" style="justify-content:flex-end"><button class="edit" onclick="document.getElementById(\'staffLoginModal\').remove()">취소</button><button class="admin" id="staffLoginGo">로그인</button></div></div>';document.body.appendChild(box);document.getElementById('staffLoginGo').onclick=async()=>{let name=document.getElementById('staffNameSelect').value,pin=document.getElementById('staffPinInput').value;if(!name){alert('본인 이름을 선택해 주세요.');return}if(!/^\d{4}$/.test(pin)){alert('PIN 숫자 4자리를 입력해 주세요.');return}try{let j=await staffApi({action:'login',name,pin});box.remove();staffToken=j.token;localStorage.setItem('bixpo_staff_token',staffToken);staff={name:j.name,role:j.role};applyStaff()}catch(e){alert(e.message==='pin_not_set'?'아직 PIN이 설정되지 않았습니다. 관리자에게 문의하세요.':'이름 또는 PIN이 맞지 않습니다.')}}}
-async function loadChat(){if(!staffToken)return;try{let j=await staffApi({action:'chat_list',token:staffToken}),next=j.messages||[];let oldIds=new Set(CHAT.map(m=>m.id)),fresh=next.filter(m=>!oldIds.has(m.id)&&m.staff_name!==staff?.name);let changed=JSON.stringify(next)!==JSON.stringify(CHAT);CHAT=next;if(tab==='chat'&&changed)renderChatMessages();if(oldIds.size&&fresh.length)fresh.forEach(m=>notifyChat(m))}catch(_){}}
+function chatMessageParts(message){
+ const raw=String(message||'');
+ const match=raw.match(/\n?\[\[bixpo-image:(chat\/[^\r\n\]]+)\]\]$/);
+ const path=match?.[1]||'';
+ if(path&&!/^chat\/[^/]{1,180}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(path))return {text:raw.trim(),imagePath:''};
+ return path?{text:raw.slice(0,match.index).trim(),imagePath:path}:{text:raw.trim(),imagePath:''}
+}
+function chatNotificationBody(m){let p=chatMessageParts(m?.message);return p.imagePath?(p.text?p.text+' · 📷 사진':'📷 사진'):p.text}
+function chatMessageMarkup(m){
+ let p=chatMessageParts(m.message),photo='',text=p.text?'<div class="chat-message-text">'+esc(p.text)+'</div>':'';
+ if(p.imagePath){let saved=chatImageUrls.get(p.imagePath);photo=saved?.url?'<a class="chat-image-link" href="'+esc(saved.url)+'" target="_blank" rel="noopener"><img src="'+esc(saved.url)+'" alt="채팅 첨부 사진" loading="lazy"></a>':'<div class="chat-image-wait">사진을 불러오는 중...</div>'}
+ let id=String(m.id||'').replace(/\D/g,'');
+ return '<div class="msg '+(m.staff_name===staff?.name?'me':'')+'"><div class="msghead"><b>'+esc(m.staff_name)+'</b> · '+new Date(m.created_at).toLocaleString('ko-KR')+(staff?.role==='admin'&&id?' <button class="edit" onclick="deleteChat('+id+')">삭제</button>':'')+'</div>'+text+photo+'</div>'
+}
+async function loadChatImageUrls(){
+ if(!staffToken||tab!=='chat'||document.visibilityState!=='visible'||chatImageSigning)return;
+ let now=Date.now(),paths=[...new Set(CHAT.map(m=>chatMessageParts(m.message).imagePath).filter(Boolean))].filter(path=>{let x=chatImageUrls.get(path);return !x||x.expiresAt<now+120000});
+ if(!paths.length)return;
+ chatImageSigning=true;
+ try{
+  for(let i=0;i<paths.length;i+=50){
+   let batch=paths.slice(i,i+50),j=await pushApi({action:'chat_image_urls',token:staffToken,paths:batch});
+   batch.forEach(path=>chatImageUrls.set(path,{url:'',expiresAt:Date.now()+60000}));
+   (j.images||[]).forEach(x=>{if(x.path&&x.signedUrl){let url=String(x.signedUrl);if(!/^https?:\/\//i.test(url))url=new URL(url,SB+'/storage/v1/').href;chatImageUrls.set(x.path,{url,expiresAt:Date.now()+55*60*1000})}})
+  }
+ }catch(_){}
+ finally{chatImageSigning=false}
+ renderChatMessages()
+}
+async function loadChat(){if(!staffToken)return;try{let j=await staffApi({action:'chat_list',token:staffToken}),next=j.messages||[];let oldIds=new Set(CHAT.map(m=>m.id)),fresh=next.filter(m=>!oldIds.has(m.id)&&m.staff_name!==staff?.name);let changed=JSON.stringify(next)!==JSON.stringify(CHAT);CHAT=next;if(tab==='chat'&&changed)renderChatMessages();if(tab==='chat')loadChatImageUrls();if(oldIds.size&&fresh.length)fresh.forEach(m=>notifyChat(m))}catch(_){}}
 function playChatSound(){try{let A=window.AudioContext||window.webkitAudioContext;if(A){let ac=new A(),o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);o.frequency.value=740;g.gain.setValueAtTime(.09,ac.currentTime);g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+.25);o.start();o.stop(ac.currentTime+.25)}}catch(e){}}
-async function notifyChat(m){let id=String(m?.id??'');if(!id||chatNotified.has(id))return;chatNotified.add(id);if(chatNotified.size>250)chatNotified.delete(chatNotified.values().next().value);let title=(m.staff_name||'새 메시지')+' · 새 채팅',body=m.message||'';if(document.visibilityState==='visible'){playChatSound();return}let pushActive=chatPushRegistered;if(!pushActive&&'serviceWorker'in navigator&&'PushManager'in window){try{let reg=await navigator.serviceWorker.ready;pushActive=chatPushRegistered=!!(await reg.pushManager.getSubscription())}catch(_){}}if(!pushActive&&'Notification'in window&&Notification.permission==='granted')try{new Notification(title,{body,icon:'/icon.svg',tag:'bixpo-chat-local-'+id})}catch(e){}}
-function renderChatMessages(){let box=document.getElementById('chatbox');if(!box)return;let nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;box.innerHTML=CHAT.map(m=>'<div class="msg '+(m.staff_name===staff?.name?'me':'')+'"><div class="msghead"><b>'+esc(m.staff_name)+'</b> · '+new Date(m.created_at).toLocaleString('ko-KR')+(staff?.role==='admin'?' <button class="edit" onclick="deleteChat('+m.id+')">삭제</button>':'')+'</div>'+esc(m.message)+'</div>').join('');if(nearBottom)box.scrollTop=box.scrollHeight}
-function chatView(){if(!staff)return '<div class="card"><h3>💬 T/F 채팅</h3><p>직원별 PIN으로 로그인하면 팀 채팅을 사용할 수 있습니다.</p><button class="admin" onclick="staffLogin()">직원 로그인</button></div>';return '<div class="card"><div class="row between"><div><h3>💬 T/F 채팅</h3><div class="muted">'+esc(staff.name)+' 이름으로 메시지가 등록됩니다.</div></div></div><div class="chatbox" id="chatbox">'+CHAT.map(m=>'<div class="msg '+(m.staff_name===staff.name?'me':'')+'"><div class="msghead"><b>'+esc(m.staff_name)+'</b> · '+new Date(m.created_at).toLocaleString('ko-KR')+(staff.role==='admin'?' <button class="edit" onclick="deleteChat('+m.id+')">삭제</button>':'')+'</div>'+esc(m.message)+'</div>').join('')+'</div><div class="chatinput"><input id="chatText" maxlength="1000" placeholder="메시지 입력" onkeydown="if(event.key===\'Enter\')sendChat()"><button class="admin" onclick="sendChat()">전송</button></div></div>'}
-async function sendChat(){let e=document.getElementById('chatText'),m=e?.value.trim();if(!m)return;try{let senderEndpoint='';if('serviceWorker'in navigator&&'PushManager'in window)try{let reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();senderEndpoint=sub?.endpoint||''}catch(_){}await pushApi({action:'chat_send',token:staffToken,message:m,senderEndpoint});e.value='';await loadChat();e=document.getElementById('chatText');if(e)e.focus()}catch(_){alert('메시지 전송에 실패했습니다.')}}
-async function deleteChat(id){if(!confirm('이 메시지를 삭제할까요?'))return;try{await staffApi({action:'chat_delete',token:staffToken,id});await loadChat()}catch(_){alert('삭제할 수 없습니다.')}}
+async function notifyChat(m){let id=String(m?.id??'');if(!id||chatNotified.has(id))return;chatNotified.add(id);if(chatNotified.size>250)chatNotified.delete(chatNotified.values().next().value);let title=(m.staff_name||'새 메시지')+' · 새 채팅',body=chatNotificationBody(m);if(document.visibilityState==='visible'){playChatSound();return}let pushActive=chatPushRegistered;if(!pushActive&&'serviceWorker'in navigator&&'PushManager'in window){try{let reg=await navigator.serviceWorker.ready;pushActive=chatPushRegistered=!!(await reg.pushManager.getSubscription())}catch(_){}}if(!pushActive&&'Notification'in window&&Notification.permission==='granted')try{new Notification(title,{body,icon:'/icon.svg',tag:'bixpo-chat-local-'+id})}catch(e){}}
+function renderChatMessages(){let box=document.getElementById('chatbox');if(!box)return;let nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;box.innerHTML=CHAT.map(chatMessageMarkup).join('');if(nearBottom)box.scrollTop=box.scrollHeight}
+function chatView(){if(!staff)return '<div class="card"><h3>💬 T/F 채팅</h3><p>직원별 PIN으로 로그인하면 팀 채팅을 사용할 수 있습니다.</p><button class="admin" onclick="staffLogin()">직원 로그인</button></div>';return '<div class="card"><div class="row between"><div><h3>💬 T/F 채팅</h3><div class="muted">'+esc(staff.name)+' 이름으로 메시지가 등록됩니다.</div></div></div><div class="chatbox" id="chatbox">'+CHAT.map(chatMessageMarkup).join('')+'</div><div class="chatinput"><button class="edit chat-attach" type="button" onclick="chooseChatImage()" aria-label="사진 첨부">📷</button><input id="chatText" maxlength="1000" placeholder="메시지 입력 · 사진만 보내도 됩니다" onkeydown="chatKeydown(event)"><input id="chatImageInput" type="file" accept="image/*" hidden onchange="selectChatImage(this)"><button class="admin chat-send-btn" onclick="sendChat()">전송</button></div><div id="chatImagePreview" class="chat-image-preview"></div></div>'}
+function chatKeydown(e){if(e.key==='Enter')sendChat()}
+function chooseChatImage(){if(!chatSending)document.getElementById('chatImageInput')?.click()}
+async function compressChatImage(file){
+ const objectUrl=URL.createObjectURL(file);let image;
+ try{image=await new Promise((resolve,reject)=>{let el=new Image();el.onload=()=>resolve(el);el.onerror=()=>reject(new Error('image_decode'));el.src=objectUrl})}
+ finally{URL.revokeObjectURL(objectUrl)}
+ let w=image.naturalWidth||image.width,h=image.naturalHeight||image.height;if(!w||!h)throw new Error('image_decode');
+ for(let maxSide of [1600,1400,1200]){
+  let scale=Math.min(1,maxSide/Math.max(w,h)),canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(w*scale));canvas.height=Math.max(1,Math.round(h*scale));
+  let context=canvas.getContext('2d');if(!context)throw new Error('canvas');
+  context.drawImage(image,0,0,canvas.width,canvas.height);
+  for(let quality of [.84,.76,.68,.6]){
+   let blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+   if(blob&&blob.size<=1800*1024)return blob
+  }
+ }
+ throw new Error('image_too_large')
+}
+async function selectChatImage(input){
+ if(chatSending)return;
+ let file=input?.files?.[0];if(input)input.value='';if(!file)return;
+ if(!String(file.type||'').startsWith('image/')){alert('사진 파일을 선택해 주세요.');return}
+ if(file.size>25*1024*1024){alert('원본 사진은 25MB 이하로 선택해 주세요.');return}
+ try{let blob=await compressChatImage(file);if(chatSelectedImageUrl)URL.revokeObjectURL(chatSelectedImageUrl);chatSelectedImage=blob;chatSelectedImageUrl=URL.createObjectURL(blob);renderChatImagePreview()}catch(_){alert('사진을 읽거나 압축하지 못했습니다. JPG, PNG 또는 WebP 사진으로 다시 선택해 주세요.')}
+}
+function renderChatImagePreview(){
+ let host=document.getElementById('chatImagePreview');if(!host)return;
+ host.innerHTML=chatSelectedImage?'<div class="chat-image-preview-card"><img src="'+esc(chatSelectedImageUrl)+'" alt="첨부 사진 미리보기"><div class="chat-image-preview-info">첨부 사진 · '+(chatSelectedImage.size/1024).toFixed(0)+'KB</div><button class="edit" type="button" onclick="clearChatImage()">사진 취소</button></div>':''
+}
+function clearChatImage(){if(chatSelectedImageUrl)URL.revokeObjectURL(chatSelectedImageUrl);chatSelectedImage=null;chatSelectedImageUrl='';renderChatImagePreview()}
+async function uploadChatImage(blob){
+ let form=new FormData();form.append('action','chat_upload');form.append('token',staffToken);form.append('image',blob,'chat-image.jpg');
+ let r;try{r=await fetch(SB+'/functions/v1/bixpo-push',{method:'POST',headers:{apikey:KEY},body:form})}catch(e){let x=new Error('network');x.kind='network';throw x}
+ let j={};try{j=await r.json()}catch(_){}
+ if(!r.ok){let x=new Error(j.error||'upload');x.kind='upload';x.status=r.status;throw x}
+ return j.path
+}
+async function sendChat(){
+ if(chatSending)return;
+ let e=document.getElementById('chatText'),message=e?.value.trim()||'',image=chatSelectedImage;
+ if(!message&&!image)return;
+ chatSending=true;let sendButton=document.querySelector('.chat-send-btn'),attachButton=document.querySelector('.chat-attach');if(sendButton)sendButton.disabled=true;if(attachButton)attachButton.disabled=true;
+ let senderEndpoint='';
+ try{
+  if('serviceWorker'in navigator&&'PushManager'in window)try{let reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();senderEndpoint=sub?.endpoint||''}catch(_){}
+  let imagePath=image?await uploadChatImage(image):'';
+  await pushApi({action:'chat_send',token:staffToken,message,imagePath,senderEndpoint});
+  if(e)e.value='';if(image)clearChatImage();await loadChat();e=document.getElementById('chatText');if(e)e.focus()
+ }catch(err){alert(err.kind==='upload'?'사진 전송에 실패했습니다. 사진 크기나 인터넷 연결을 확인해 주세요.':'메시지 전송에 실패했습니다.')}
+ finally{chatSending=false;sendButton=document.querySelector('.chat-send-btn');attachButton=document.querySelector('.chat-attach');if(sendButton)sendButton.disabled=false;if(attachButton)attachButton.disabled=false}
+}
+async function deleteChat(id){if(!confirm('이 메시지를 삭제할까요?'))return;let message=CHAT.find(m=>String(m.id)===String(id))?.message||'',imagePath=chatMessageParts(message).imagePath;try{await staffApi({action:'chat_delete',token:staffToken,id});if(imagePath)try{await pushApi({action:'chat_image_delete',token:staffToken,path:imagePath})}catch(_){console.warn('채팅 사진 정리 실패',imagePath)}await loadChat()}catch(_){alert('삭제할 수 없습니다.')}}
 async function adminSetPin(name){let pin=prompt(name+'의 새 PIN 4자리를 입력하세요.');if(!pin)return;if(!/^\d{4}$/.test(pin)){alert('PIN은 숫자 4자리로 입력해 주세요.');return}try{await staffApi({action:'set_pin',token:staffToken,name,pin});alert(name+' PIN을 설정했습니다. 기존 로그인 세션은 해제됩니다.')}catch(_){alert('PIN 설정에 실패했습니다.')}}
 function adminPanel(){if(!admin)return '<div class="card"><h3>⚙️ 관리자</h3><p>관리자 로그인이 필요합니다.</p></div>';let rows=S.people.map(p=>'<div class="item row between"><div><b>'+esc(p.name)+'</b>'+(p.name==='최재혁'?' <span class="badge">관리자</span>':' <span class="muted">직원</span>')+'</div><div class="row"><button class="edit" onclick="setPinFromAdmin(\''+esc(p.name)+'\')">PIN 설정/재설정</button><button class="edit" onclick="revokeFromAdmin(\''+esc(p.name)+'\')">강제 로그아웃</button></div></div>').join('');return '<div class="card"><h3>⚙️ 관리자 화면</h3><div class="muted">직원 로그인과 권한을 관리합니다. 최재혁은 직원 PIN 로그인 시 관리자 권한이 활성화됩니다.</div>'+rows+'</div><div class="card"><h3>관리 기능</h3><div class="item">📅 일정·숙박·근무표 — 각 메뉴에서 수정</div><div class="item">☑ 준비·시연 — 추가·수정·삭제</div><div class="item">📢 공지사항 — 등록·수정·삭제 및 Push 발송</div><div class="item">💬 전시 FAQ — 추가·수정·삭제</div><div class="item">💬 T/F 채팅 — 최재혁 관리자 로그인 시 전체 메시지 관리</div></div>'}
 async function adminStaffApi(action,name,pin){let r=await fetch(SB+'/functions/v1/bixpo-admin',{method:'POST',headers:{'Content-Type':'application/json','apikey':KEY},body:JSON.stringify({action,password:adminPass,name,pin})});let j={};try{j=await r.json()}catch(_){}if(!r.ok)throw new Error(j.error||'admin');return j}
@@ -48,7 +127,7 @@ if(tab==='calendar')h=calendar();
 if(tab==='people')h='<div class="card"><div class="row between"><h3>개인별 출장 일정</h3>'+(admin?'<button class="admin" onclick="addPerson()">+ 인원 추가</button>':'')+'</div>'+S.people.map((p,i)=>'<div class="item"><div class="row between"><div><b>'+esc(p.name)+'</b> <span class="badge">'+esc(p.role)+'</span></div>'+(admin?'<button class="edit" onclick="editPerson('+i+')">수정</button>':'')+'</div><div>↓ '+esc(p.down)+'</div><div>⌂ '+esc(p.stay)+'</div><div>↑ '+esc(p.up)+'</div>'+(p.note?'<div class="muted">'+esc(p.note)+'</div>':'')+'</div>').join('')+'</div>';
 if(tab==='shifts')h='<div class="card"><h3>전시안내 근무표</h3>'+S.shifts.map((s,i)=>'<div class="item row between"><div><b>'+esc(s.date)+' '+esc(s.period)+' '+esc(s.time)+'</b><div>'+esc(s.people)+'</div></div>'+(admin?'<button class="edit" onclick="editShift('+i+')">수정</button>':'')+'</div>').join('')+'</div>';
 if(tab==='faq')h=faqView();
-if(tab==='chat')h=chatView();
+if(tab==='chat'){h=chatView();setTimeout(loadChatImageUrls,0)}
 if(tab==='adminpanel')h=adminPanel();
 if(tab==='tasks')h='<div class="card"><div class="row between"><h3>준비·시연</h3>'+(admin?'<button class="admin" onclick="addTask()">+ 준비·시연 추가</button>':'')+'</div>'+S.tasks.map((t,i)=>'<div class="item row between '+(t.done?'taskdone':'')+'"><div><b>'+(t.done?'✓ ':'○ ')+esc(t.title)+'</b><div class="muted">담당자 '+esc(t.owner||'미정')+' · 마감 '+esc(t.due||'미정')+'</div><div>'+esc(t.note||'')+'</div></div>'+(admin?'<div class="row"><button class="edit" onclick="editTask('+i+')">수정</button><button class="edit" onclick="deleteTask('+i+')">삭제</button></div>':'')+'</div>').join('')+'</div>';
 document.querySelector('#view').innerHTML=h}
