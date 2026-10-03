@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {createClient} from "npm:@supabase/supabase-js@2";
 import webpush from "npm:web-push@3.6.7";
-import {chatImagePathOwnedBy, chatPushPayload, isChatImagePath, selectChatPushRecipients} from "./push-utils.mjs";
+import {chatImagePathOwnedBy, chatPushPayload, chatStaffFolder, isChatImagePath, selectChatPushRecipients} from "./push-utils.mjs";
 
 const H={
   "Access-Control-Allow-Origin":"*",
@@ -81,7 +81,7 @@ async function uploadChatImage(form:FormData){
   if(file.size>CHAT_IMAGE_MAX_BYTES)return reply({error:"image_too_large"},413);
   await ensureChatBucket();
   const ext=type==="image/jpeg"?"jpg":type==="image/png"?"png":"webp";
-  const path="chat/"+encodeURIComponent(sender.name)+"/"+crypto.randomUUID()+"."+ext;
+  const path="chat/"+chatStaffFolder(sender.name)+"/"+crypto.randomUUID()+"."+ext;
   const uploaded=await db.storage.from(CHAT_BUCKET).upload(path,file,{
     contentType:type,
     cacheControl:"3600",

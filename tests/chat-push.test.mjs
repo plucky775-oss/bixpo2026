@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import {chatImagePathOwnedBy,chatMessageNotificationBody,chatMessageParts,chatPushPayload,isChatImagePath,selectChatPushRecipients} from "../supabase/functions/bixpo-push/push-utils.mjs";
+import {chatImagePathOwnedBy,chatMessageNotificationBody,chatMessageParts,chatPushPayload,chatStaffFolder,isChatImagePath,selectChatPushRecipients} from "../supabase/functions/bixpo-push/push-utils.mjs";
 
 const workerSource=readFileSync(new URL("../sw.js",import.meta.url),"utf8");
 const appSource=readFileSync(new URL("../app.js",import.meta.url),"utf8");
@@ -112,7 +112,7 @@ test("chat sound stays active and local notifications are deduplicated or suppre
 
 
 test("chat image markers stay hidden from message text and push notifications",()=>{
-  const path="chat/"+encodeURIComponent("민수")+"/01234567-89ab-cdef-0123-456789abcdef.jpg";
+  const path="chat/"+chatStaffFolder("민수")+"/01234567-89ab-cdef-0123-456789abcdef.jpg";
   const message="집결 장소가 변경됐습니다."+String.fromCharCode(10)+"[[bixpo-image:"+path+"]]";
   assert.equal(isChatImagePath(path),true);
   assert.equal(chatImagePathOwnedBy(path,"민수"),true);
@@ -128,11 +128,12 @@ test("chat image markers stay hidden from message text and push notifications",(
 test("chat image path validation rejects arbitrary object keys",()=>{
   assert.equal(isChatImagePath("other/file.jpg"),false);
   assert.equal(isChatImagePath("chat/민수/not-a-uuid.jpg"),false);
+  assert.equal(isChatImagePath("chat/민수/01234567-89ab-cdef-0123-456789abcdef.jpg"),false);
 });
 
 test("chat view adds a photo picker and renders signed private photos",()=>{
   const app=appContext({visibilityState:"visible"});
-  const path="chat/민수/01234567-89ab-cdef-0123-456789abcdef.jpg";
+  const path="chat/"+chatStaffFolder("민수")+"/01234567-89ab-cdef-0123-456789abcdef.jpg";
   const message="현장 위치 사진입니다."+String.fromCharCode(10)+"[[bixpo-image:"+path+"]]";
   const rows=[{id:78,staff_name:"민수",message,created_at:"2026-10-03T00:00:00Z"}];
   const setup="staff={name:'민수',role:'staff'};CHAT="+JSON.stringify(rows)+";chatImageUrls.set("+JSON.stringify(path)+",{url:'https://example.supabase.co/storage/v1/object/sign/bixpo-chat/photo?token=x',expiresAt:Date.now()+3600000});chatView()";

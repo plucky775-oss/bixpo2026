@@ -1,9 +1,13 @@
 export function isChatImagePath(value){
-  return /^chat\/[^/]{1,180}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(String(value||""));
+  return /^chat\/[a-f0-9]{2,180}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpg|png|webp)$/i.test(String(value||""));
+}
+
+export function chatStaffFolder(staffName){
+  return Array.from(new TextEncoder().encode(String(staffName||"")),byte=>byte.toString(16).padStart(2,"0")).join("");
 }
 
 export function chatImagePathOwnedBy(path,staffName){
-  return isChatImagePath(path)&&String(path).split("/")[1]===encodeURIComponent(String(staffName||""));
+  return isChatImagePath(path)&&String(path).split("/")[1]===chatStaffFolder(staffName);
 }
 
 export function chatMessageImagePath(message){
