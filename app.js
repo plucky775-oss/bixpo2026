@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 10055)
-Total output lines: 159
-
 
 const SB='https://ovaqwpzffawtozgidbav.supabase.co',KEY='sb_publishable_WJNbTVKF66c6Y7AVfxaYBA_7gpkEUyP';let S={people:[],shifts:[],tasks:[],notes:[]},FAQ=[],tab=new URLSearchParams(location.search).get('tab')==='chat'?'chat':'calendar',admin=false,adminPass='',personFilter='전체',typeFilter='전체',faqProduct='전체',faqQuery='',taskPersonFilter='전체',openFaq=new Set(),staff=null,staffToken=localStorage.getItem('bixpo_staff_token')||'',CHAT=[],chatPushRegistered=false,chatNotified=new Set(),chatImageUrls=new Map(),chatImageSigning=false,chatSelectedImage=null,chatSelectedImageUrl='',chatSending=false;const T=[['calendar','📅 통합 달력'],['people','👥 개인별 일정'],['shifts','🪪 근무표'],['tasks','☑ 준비·시연'],['faq','💬 전시 FAQ'],['chat','💬 T/F 채팅'],['adminpanel','⚙️ 관리자']];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -92,7 +89,9 @@ function renderChatImagePreview(){
 function clearChatImage(){if(chatSelectedImageUrl)URL.revokeObjectURL(chatSelectedImageUrl);chatSelectedImage=null;chatSelectedImageUrl='';renderChatImagePreview()}
 async function uploadChatImage(blob){
  let form=new FormData();form.append('action','chat_upload');form.append('token',staffToken);form.append('image',blob,'chat-image.jpg');
- let r;try{r=await fetch(SB+'/functions/…55 tokens truncated…='upload';x.status=r.status;throw x}
+ let r;try{r=await fetch(SB+'/functions/v1/bixpo-push',{method:'POST',headers:{apikey:KEY},body:form})}catch(e){let x=new Error('network');x.kind='network';throw x}
+ let j={};try{j=await r.json()}catch(_){}
+ if(!r.ok){let x=new Error(j.error||'upload');x.kind='upload';x.status=r.status;throw x}
  return j.path
 }
 async function sendChat(){
