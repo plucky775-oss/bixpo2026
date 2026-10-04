@@ -60,3 +60,13 @@ test("FAQ edit flow asks for 핵심 답변 and updates the existing short_answer
   assert.equal(requests[0].item.short_answer,"수정 답변");
   assert.equal(requests[0].item.id,faq.id);
 });
+
+test("FAQ authentication failures are identified and clear the stale administrator session",()=>{
+  const {context}=appContext();context.adminBtn={textContent:"관리자 로그아웃"};
+  vm.runInNewContext("admin=true;adminPass='stale'",context);
+  const error=vm.runInNewContext("Object.assign(new Error('auth'),{kind:'auth'})",context);
+  const message=context.faqSaveError(error,"수정");
+  assert.match(message,/관리자 인증이 만료/);
+  assert.equal(vm.runInNewContext("admin",context),false);
+  assert.equal(vm.runInNewContext("adminPass",context),"");
+});
