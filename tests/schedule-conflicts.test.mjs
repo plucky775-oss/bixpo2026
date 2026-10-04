@@ -72,3 +72,11 @@ test("current schedule data flags the 11/5 departure versus 11/6 shift for admin
   assert.match(notice,/최재혁/);
   assert.match(notice,/11\/6\(금\).*오전.*9-12/);
 });
+
+test("a failed schedule save restores the prior shift and reports the server failure",async()=>{
+ const context=appContext(),prior={people:[],shifts:[{id:"s1",date:"11/3(화)",period:"오전",time:"9-12",people:"홍길동",note:""}],tasks:[],notes:[]};
+ vm.runInNewContext("S="+JSON.stringify(prior),context);context.prompt=()=>"10-13";
+ context.api=async()=>{const error=new Error("server_error");error.kind="db";throw error};
+ const saved=await context.editShift(0);assert.equal(saved,false);
+ assert.equal(vm.runInNewContext("S.shifts[0].time",context),"9-12");
+});
