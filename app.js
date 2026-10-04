@@ -5,8 +5,85 @@ function md(s){let m=String(s||'').match(/11\/(\d{1,2})/);return m?+m[1]:null}
 function stayRange(s){let a=[...String(s||'').matchAll(/11\/(\d{1,2})/g)].map(x=>+x[1]);return a.length>1?[a[0],a[1]]:null}
 function selected(name){return personFilter==='전체'||String(name||'').replaceAll(' ','').split(',').includes(personFilter)}
 function typed(t){return typeFilter==='전체'||typeFilter===t||(typeFilter==='travel'&&(t==='depart'||t==='return'))}
+// Warnings are derived from the current state, including server-loaded data.
+// Never change travel dates, hotel bookings or shift assignments to resolve them.
+function scheduleDay(value){
+  let m=String(value||'').match(/^\s*11\/(\d{1,2})(?!\d)/),d=m?+m[1]:0;
+  return d>=1&&d<=30?d:null;
+}
+function travelWindow(value){
+  let text=String(value||'').replace(/^\s*11\/\d{1,2}(?:\([^)]*\))?/,''),
+      matches=[...text.matchAll(/(?:^|[^\d])(?:(오전|오후)\s*)?(\d{1,2})(?:시(?:\s*(\d{1,2})분)?|:(\d{2}))(?!\d)/g)],m=matches[0],
+      periods=[...new Set(text.match(/오전|오후/g)||[])];
+  if(matches.length>1||periods.length>1)return null;
+  if(m){
+    let h=+m[2],min=+(m[3]||m[4]||0),period=m[1]||periods[0];
+    if(h>23||min>59||(period&&(h<1||h>12)))return null;
+    if(period)h=h%12+(period==='오후'?12:0);
+    return [h*60+min,h*60+min];
+  }
+  return text.includes('오전')?[0,720]:text.includes('오후')?[720,1440]:null;
+}
+function shiftWindow(shift){
+  let m=String(shift.time||'').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*[-~–]\s*(\d{1,2})(?::(\d{2}))?$/);
+  if(!m)return null;
+  let start=+m[1],end=+m[3],sm=+(m[2]||0),em=+(m[4]||0);
+  if(start>23||end>24||sm>59||em>59||(end===24&&em))return null;
+  // Existing ranges such as 오전 9-14 use a 24-hour clock; 오후 2-6 is also accepted.
+  if(shift.period==='오후'){if(start>=1&&start<12)start+=12;if(end>=1&&end<12)end+=12;}
+  start=start*60+sm;end=end*60+em;
+  return start<end?[start,end]:null;
+}
+function scheduleConflicts(state=S){
+  let warnings=[];
+  (state.people||[]).forEach(p=>{
+    let down=scheduleDay(p.down),up=scheduleDay(p.up),stay=stayRange(p.stay);
+    const add=(level,types,days,message)=>warnings.push({person:p.name,level,types,days:[...new Set(days)],message});
+    if(down!==null&&up!==null&&down>up)
+      add('conflict',['depart','return'],[down,up],'출발 '+p.down+' / 복귀 '+p.up+' — 출발일이 복귀일보다 늦습니다.');
+    (state.shifts||[]).forEach(s=>{
+      let names=String(s.people||'').replace(/\s/g,'').split(','),day=scheduleDay(s.date);
+      if(!names.includes(String(p.name||'').replace(/\s/g,''))||day===null)return;
+      let duty=s.date+' '+(s.period||'')+' '+(s.time||'')+' 근무',hours=shiftWindow(s);
+      if(down!==null&&day<down)
+        add('conflict',['depart','shift'],[down,day],duty+' / 출발 '+p.down+' — 출발일 이전 근무입니다.');
+      if(up!==null&&day>up)
+        add('conflict',['return','shift'],[up,day],duty+' / 복귀 '+p.up+' — 복귀일 이후 근무입니다.');
+      if(!hours)return;
+      for(let [type,date,value] of [['depart',down,p.down],['return',up,p.up]]){
+        if(day!==date)continue;
+        let time=travelWindow(value);
+        if(!time)continue; // Missing or unrecognised times cannot establish an overlap.
+        let definite=type==='depart'?hours[0]<time[0]:hours[1]>time[1],
+            possible=type==='depart'?hours[0]<time[1]:hours[1]>time[0];
+        if(definite||possible)add(definite?'conflict':'review',[type,'shift'],[day],duty+' / '+(type==='depart'?'출발 ':'복귀 ')+value+' — '+(definite?'이동 시간과 근무 시간이 겹칩니다.':'이동 시각이 확정되지 않아 근무 시간과 겹칠 수 있습니다.'));
+      }
+    });
+    // A reservation outside the trip may be intentional, so request confirmation only.
+    if(stay&&stay[0]>=1&&stay[1]<=30&&stay[0]<stay[1]){
+      if(up!==null&&stay[1]>up)add('review',['stay','return'],[up,stay[1]],'숙박 '+p.stay+' / 복귀 '+p.up+' — 체크아웃이 복귀일보다 늦습니다. 예약 유지 여부를 확인하세요.');
+      if(down!==null&&stay[0]<down)add('review',['stay','depart'],[stay[0],down],'숙박 '+p.stay+' / 출발 '+p.down+' — 체크인이 출발일보다 이릅니다. 예약 일정을 확인하세요.');
+    }
+  });
+  return warnings;
+}
+function visibleScheduleConflicts(){
+  return scheduleConflicts().filter(w=>selected(w.person)&&w.types.some(typed));
+}
+function scheduleWarnings(warnings){
+  if(!warnings.length)return '';
+  let conflicts=warnings.filter(w=>w.level==='conflict'),reviews=warnings.filter(w=>w.level==='review');
+  const list=rows=>'<ul>'+rows.map(w=>'<li class="schedule-warning '+w.level+'"><span class="warning-label">'+(w.level==='conflict'?'일정 충돌':'확인 필요')+'</span> <b>'+esc(w.person)+'</b> · '+esc(w.message)+'</li>').join('')+'</ul>';
+  return '<section class="schedule-warnings" aria-label="일정 충돌 및 확인 필요"><h3>⚠ 일정 충돌·확인 필요</h3><p>충돌 '+conflicts.length+'건 · 확인 필요 '+reviews.length+'건. 실제 이동 일정과 근무 배정을 확인해 주세요.</p>'+(conflicts.length?list(conflicts):'')+(reviews.length?'<details><summary>확인 필요 '+reviews.length+'건 보기</summary>'+list(reviews)+'</details>':'')+'</section>';
+}
+function scheduleDayWarning(warnings,day){
+  let rows=warnings.filter(w=>w.days.includes(day));
+  if(!rows.length)return '';
+  let conflicts=rows.filter(w=>w.level==='conflict').length,reviews=rows.length-conflicts;
+  return '<div class="schedule-day-warning" title="'+esc(rows.map(w=>w.person+' · '+w.message).join('\n'))+'">⚠ '+(conflicts?'충돌 '+conflicts+'건':'')+(conflicts&&reviews?' · ':'')+(reviews?'확인 '+reviews+'건':'')+'</div>';
+}
 function events(d){let a=[];S.people.forEach(p=>{if(!selected(p.name))return;if(typed('depart')&&md(p.down)===d)a.push(['depart','↓ '+p.name+' 출발 · '+p.down]);if(typed('return')&&md(p.up)===d)a.push(['return','↑ '+p.name+' 복귀 · '+p.up]);let r=stayRange(p.stay);if(typed('stay')&&r&&d>=r[0]&&d<r[1])a.push(['stay','⌂ '+p.name+' 숙박'])});S.shifts.forEach(s=>{let names=String(s.people||'').replaceAll(' ','').split(',');if(typed('shift')&&md(s.date)===d&&(personFilter==='전체'||names.includes(personFilter)))a.push(['shift','● '+s.period+' '+s.time+' · '+s.people])});if(typed('prep')&&d===3&&(personFilter==='전체'||['최재혁','정승훈'].includes(personFilter)))a.push(['prep','◆ 부스 준비 · 최재혁, 정승훈']);if(typed('prep')&&d===6&&(personFilter==='전체'||['최재혁','신소망'].includes(personFilter)))a.push(['prep','◆ 부스 철거 · 최재혁, 신소망']);return a}
-function calendar(){let h='<div class="card"><div class="row between"><h3>2026년 11월 1주차</h3><span class="muted">11월 2일(월) ~ 6일(금)</span></div><div class="filter"><b>내 일정 보기</b><select onchange="personFilter=this.value;render()"><option>전체</option>'+S.people.map(p=>'<option '+(personFilter===p.name?'selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select><b>일정 종류</b><select onchange="typeFilter=this.value;render()"><option value="전체">전체</option><option value="travel" '+(typeFilter==='travel'?'selected':'')+'>출발·복귀</option><option value="stay" '+(typeFilter==='stay'?'selected':'')+'>숙박</option><option value="shift" '+(typeFilter==='shift'?'selected':'')+'>전시근무</option><option value="prep" '+(typeFilter==='prep'?'selected':'')+'>부스준비</option></select><span class="muted">이름과 일정 종류를 함께 선택할 수 있습니다.</span></div><div class="legend"><span class="depart">↓ 출발</span><span class="stay">⌂ 숙박</span><span class="shift">● 전시근무</span><span class="prep">◆ 부스준비</span><span class="return">↑ 복귀</span></div><div class="cal">'+['2 월','3 화','4 수','5 목','6 금'].map((x,i)=>{let d=i+2,es=events(d),order=['depart','stay','shift','prep','return'];es.sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0]));return '<div class="day '+(es.length?'eventday':'')+'"><div class="num">'+x+'</div>'+order.map(type=>{let rows=es.filter(e=>e[0]===type);return rows.length?'<div class="daygroup '+type+'">'+rows.map(e=>'<div class="ev '+type+'">'+esc(e[1])+'</div>').join('')+'</div>':''}).join('')+'</div>'}).join('')+'</div></div>';return h}
+function calendar(){let warnings=visibleScheduleConflicts();let h='<div class="card"><div class="row between"><h3>2026년 11월 1주차</h3><span class="muted">11월 2일(월) ~ 6일(금)</span></div><div class="filter"><b>내 일정 보기</b><select onchange="personFilter=this.value;render()"><option>전체</option>'+S.people.map(p=>'<option '+(personFilter===p.name?'selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select><b>일정 종류</b><select onchange="typeFilter=this.value;render()"><option value="전체">전체</option><option value="travel" '+(typeFilter==='travel'?'selected':'')+'>출발·복귀</option><option value="stay" '+(typeFilter==='stay'?'selected':'')+'>숙박</option><option value="shift" '+(typeFilter==='shift'?'selected':'')+'>전시근무</option><option value="prep" '+(typeFilter==='prep'?'selected':'')+'>부스준비</option></select><span class="muted">이름과 일정 종류를 함께 선택할 수 있습니다.</span></div>'+scheduleWarnings(warnings)+'<div class="legend"><span class="depart">↓ 출발</span><span class="stay">⌂ 숙박</span><span class="shift">● 전시근무</span><span class="prep">◆ 부스준비</span><span class="return">↑ 복귀</span></div><div class="cal">'+['2 월','3 화','4 수','5 목','6 금'].map((x,i)=>{let d=i+2,es=events(d),order=['depart','stay','shift','prep','return'];es.sort((a,b)=>order.indexOf(a[0])-order.indexOf(b[0]));return '<div class="day '+(es.length?'eventday':'')+'"><div class="num">'+x+'</div>'+scheduleDayWarning(warnings,d)+order.map(type=>{let rows=es.filter(e=>e[0]===type);return rows.length?'<div class="daygroup '+type+'">'+rows.map(e=>'<div class="ev '+type+'">'+esc(e[1])+'</div>').join('')+'</div>':''}).join('')+'</div>'}).join('')+'</div></div>';return h}
 function toggleHotel(){let el=document.getElementById('hotelCard');if(!el)return;let collapsed=el.classList.toggle('collapsed');localStorage.setItem('bixpo_hotel_collapsed',collapsed?'1':'0');let a=document.getElementById('hotelArrow');if(a)a.textContent=collapsed?'▼':'▲'}
 function renderHotel(){let h=S.hotel;if(!h){document.querySelector('#hotelArea').innerHTML='';return}let stays=S.people.filter(p=>stayRange(p.stay)).map(p=>'<div><b>'+esc(p.name)+'</b> · '+esc(p.stay)+'</div>').join(''),collapsed=localStorage.getItem('bixpo_hotel_collapsed')==='1';document.querySelector('#hotelArea').innerHTML='<div id="hotelCard" class="hotel '+(collapsed?'collapsed':'')+'"><div class="row between hotelhead" onclick="toggleHotel()"><div><h3>🏨 숙소정보</h3><b>'+esc(h.name)+'</b> <span class="badge">'+esc(h.status||'')+'</span></div><span id="hotelArrow" class="hotelarrow">'+(collapsed?'▼':'▲')+'</span></div><div class="hotelbody"><div class="muted">'+esc(h.note||'')+'</div><a class="hotelbtn" href="'+esc(h.booking_url||'#')+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">숙소 상세보기</a><div style="margin-top:10px">'+stays+'</div></div></div>'}
 function renderNotice(){let ns=S.notes||[],h='';if(ns.length)h='<div class="notice-list">'+ns.map((n,i)=>'<div class="notice-row"><h3>📢 '+esc(n.title||'공지사항')+'</h3><p>'+esc(n.text||'')+'</p><div class="notice-meta">'+esc(n.date||'')+'</div>'+(admin?'<div class="notice-actions row"><button class="edit" onclick="editNotice('+i+')">수정</button><button class="edit" onclick="deleteNotice('+i+')">삭제</button></div>':'')+'</div>').join('')+'</div>';if(admin)h+='<div class="notice-actions"><button class="admin" onclick="addNotice()">+ 공지사항 등록</button></div>';document.querySelector('#noticeArea').innerHTML=h}
@@ -106,7 +183,7 @@ async function sendChat(){
 }
 async function deleteChat(id){if(!confirm('이 메시지를 삭제할까요?'))return;let message=CHAT.find(m=>String(m.id)===String(id))?.message||'',imagePath=chatMessageParts(message).imagePath;try{await staffApi({action:'chat_delete',token:staffToken,id});if(imagePath)try{await pushApi({action:'chat_image_delete',token:staffToken,path:imagePath})}catch(_){console.warn('채팅 사진 정리 실패',imagePath)}await loadChat()}catch(_){alert('삭제할 수 없습니다.')}}
 async function adminSetPin(name){let pin=prompt(name+'의 새 PIN 4자리를 입력하세요.');if(!pin)return;if(!/^\d{4}$/.test(pin)){alert('PIN은 숫자 4자리로 입력해 주세요.');return}try{await staffApi({action:'set_pin',token:staffToken,name,pin});alert(name+' PIN을 설정했습니다. 기존 로그인 세션은 해제됩니다.')}catch(_){alert('PIN 설정에 실패했습니다.')}}
-function adminPanel(){if(!admin)return '<div class="card"><h3>⚙️ 관리자</h3><p>관리자 로그인이 필요합니다.</p></div>';let rows=S.people.map(p=>'<div class="item row between"><div><b>'+esc(p.name)+'</b>'+(p.name==='최재혁'?' <span class="badge">관리자</span>':' <span class="muted">직원</span>')+'</div><div class="row"><button class="edit" onclick="setPinFromAdmin(\''+esc(p.name)+'\')">PIN 설정/재설정</button><button class="edit" onclick="revokeFromAdmin(\''+esc(p.name)+'\')">강제 로그아웃</button></div></div>').join('');return '<div class="card"><h3>⚙️ 관리자 화면</h3><div class="muted">직원 로그인과 권한을 관리합니다. 최재혁은 직원 PIN 로그인 시 관리자 권한이 활성화됩니다.</div>'+rows+'</div><div class="card"><h3>관리 기능</h3><div class="item">📅 일정·숙박·근무표 — 각 메뉴에서 수정</div><div class="item">☑ 준비·시연 — 추가·수정·삭제</div><div class="item">📢 공지사항 — 등록·수정·삭제 및 Push 발송</div><div class="item">💬 전시 FAQ — 추가·수정·삭제</div><div class="item">💬 T/F 채팅 — 최재혁 관리자 로그인 시 전체 메시지 관리</div></div>'}
+function adminPanel(){if(!admin)return '<div class="card"><h3>⚙️ 관리자</h3><p>관리자 로그인이 필요합니다.</p></div>';let rows=S.people.map(p=>'<div class="item row between"><div><b>'+esc(p.name)+'</b>'+(p.name==='최재혁'?' <span class="badge">관리자</span>':' <span class="muted">직원</span>')+'</div><div class="row"><button class="edit" onclick="setPinFromAdmin(\''+esc(p.name)+'\')">PIN 설정/재설정</button><button class="edit" onclick="revokeFromAdmin(\''+esc(p.name)+'\')">강제 로그아웃</button></div></div>').join('');return scheduleWarnings(scheduleConflicts())+'<div class="card"><h3>⚙️ 관리자 화면</h3><div class="muted">직원 로그인과 권한을 관리합니다. 최재혁은 직원 PIN 로그인 시 관리자 권한이 활성화됩니다.</div>'+rows+'</div><div class="card"><h3>관리 기능</h3><div class="item">📅 일정·숙박·근무표 — 각 메뉴에서 수정</div><div class="item">☑ 준비·시연 — 추가·수정·삭제</div><div class="item">📢 공지사항 — 등록·수정·삭제 및 Push 발송</div><div class="item">💬 전시 FAQ — 추가·수정·삭제</div><div class="item">💬 T/F 채팅 — 최재혁 관리자 로그인 시 전체 메시지 관리</div></div>'}
 async function adminStaffApi(action,name,pin){let r=await fetch(SB+'/functions/v1/bixpo-admin',{method:'POST',headers:{'Content-Type':'application/json','apikey':KEY},body:JSON.stringify({action,password:adminPass,name,pin})});let j={};try{j=await r.json()}catch(_){}if(!r.ok)throw new Error(j.error||'admin');return j}
 async function setPinFromAdmin(name){let pin=prompt(name+'의 새 PIN 4자리를 입력하세요.');if(!pin)return;if(!/^\d{4}$/.test(pin)){alert('PIN은 숫자 4자리로 입력해 주세요.');return}try{await adminStaffApi('set_staff_pin',name,pin);alert(name+'의 PIN을 설정했습니다. 기존 직원 로그인 세션은 해제됩니다.')}catch(e){alert('PIN 설정에 실패했습니다.')}}
 async function revokeFromAdmin(name){if(!confirm(name+'의 로그인된 모든 기기를 로그아웃할까요?'))return;try{await adminStaffApi('revoke_staff',name);alert(name+'의 기존 로그인 세션을 해제했습니다.')}catch(e){alert('강제 로그아웃에 실패했습니다.')}}
@@ -130,6 +207,7 @@ if(tab==='faq')h=faqView();
 if(tab==='chat'){h=chatView();setTimeout(loadChatImageUrls,0)}
 if(tab==='adminpanel')h=adminPanel();
 if(tab==='tasks'){let dueKey=t=>{let m=String(t.due||'').match(/(?:\d{4}[.\/-])?(\d{1,2})[.\/-](\d{1,2})/);return m?(+m[1]*100+ +m[2]):9999};let taskRows=S.tasks.map((t,i)=>({t,i})).filter(x=>taskPersonFilter==='전체'||String(x.t.owner||'').replaceAll(' ','').split(',').includes(taskPersonFilter)).sort((a,b)=>Number(a.t.done)-Number(b.t.done)||dueKey(a.t)-dueKey(b.t)||a.i-b.i);h='<div class="card"><div class="row between"><h3>준비·시연</h3>'+(admin?'<button class="admin" onclick="addTask()">+ 준비·시연 추가</button>':'')+'</div><div class="filter"><b>담당자</b><select onchange="taskPersonFilter=this.value;render()"><option value="전체">전체</option>'+S.people.map(p=>'<option value="'+esc(p.name)+'" '+(taskPersonFilter===p.name?'selected':'')+'>'+esc(p.name)+'</option>').join('')+'</select><span class="muted">이름을 선택하면 해당 담당자의 임무만 표시됩니다.</span></div>'+taskRows.map(x=>{let t=x.t,i=x.i;return '<div class="item row between '+(t.done?'taskdone':'')+'"><div><b>'+(t.done?'✓ ':'○ ')+esc(t.title)+'</b><div class="muted">담당자 '+esc(t.owner||'미정')+' · 마감 '+esc(t.due||'미정')+'</div><div>'+esc(t.note||'')+'</div></div>'+(admin?'<div class="row"><button class="edit" onclick="editTask('+i+')">수정</button><button class="edit" onclick="deleteTask('+i+')">삭제</button></div>':'')+'</div>'}).join('')+(taskRows.length?'':'<div class="muted" style="padding:18px 0">선택한 담당자의 준비·시연 임무가 없습니다.</div>')+'</div>'}
+if(admin&&['people','shifts'].includes(tab))h=scheduleWarnings(scheduleConflicts())+h;
 document.querySelector('#view').innerHTML=h}
 async function api(action,data){let r;try{r=await fetch(SB+'/functions/v1/bixpo-admin',{method:'POST',headers:{'Content-Type':'application/json','apikey':KEY},body:JSON.stringify({action,password:adminPass,data})})}catch(e){let x=new Error('network');x.kind='network';throw x}let body={};try{body=await r.json()}catch(e){}if(r.status===401||r.status===403){let x=new Error('auth');x.kind='auth';throw x}if(!r.ok){let x=new Error(body.detail||body.error||('HTTP '+r.status));x.kind='db';x.status=r.status;throw x}return body}
 async function adminLogin(){if(admin){admin=false;adminPass='';adminBtn.textContent='관리자 로그인';render();return}let p=prompt('관리자 비밀번호를 입력하세요.');if(!p)return;adminPass=p;try{await api('login');admin=true;adminBtn.textContent='관리자 로그아웃';render()}catch(e){adminPass='';if(e.kind==='network')alert('네트워크 오류입니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.');else if(e.kind==='auth')alert('로그인 오류입니다. 관리자 비밀번호를 확인해 주세요.');else alert('관리자 로그인 서버 오류입니다. 잠시 후 다시 시도해 주세요.')}}
